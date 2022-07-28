@@ -1,136 +1,94 @@
 #include <unistd.h>
 #include <string.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <sys/wait.h>
 
-size_t ft_strlen(char const *str)
-{
-	size_t i = 0;
-
-	while (str[i])
-		i++;
-	return (i);
-}
-
-int fatal_error(void)
-{
-	write(STDERR_FILENO, "error: fatal\n", 13);
-	return (1);
-}
-
-int cd(char **cmd)
+int putstr(char const *str, char const *arg)
 {
 	int i = 0;
-	
-	while (cmd[i])
-		i++;
-	if (i != 2)
-		write(STDERR_FILENO, "error: cd bad arguments\n", 25);
-	else if (chdir(cmd[1]) == -1)
+	while (str[i])
 	{
-		write(STDERR_FILENO, "error: cd: cannot change directory to ", 38);
-		write(STDERR_FILENO, cmd[1], ft_strlen(cmd[1]));
-		write(STDERR_FILENO, "\n", 1);
+		write(STDERR_FILENO, &str[i], 1);
+		i++;
 	}
-	else
-		return (0);
+	i = 0;
+	if (arg)
+	{
+		while (arg[i])
+		{
+			write(STDERR_FILENO, &arg[i], 1);
+			i++;
+		}
+	}
+	write(STDERR_FILENO, "\n", 1);
 	return (1);
 }
 
-void	child_execute_command(char **cmd, char **env)
+int execute_cmd(char **argv, int i, int tmp_fd, char **env)
 {
-	if (!strcmp(cmd[0], "cd"))
-		exit(cd(cmd));
-
-	execve(cmd[0], cmd, env);
-	write(STDERR_FILENO, "error: cannot execute ", 22);
-	write(STDERR_FILENO, cmd[0], ft_strlen(cmd[0]));
-	write(STDERR_FILENO, "\n", 1);
-	exit(1);
+	argv[i] = NULL;
+	dup2(tmp_fd, STDIN_FILENO);
+	close(tmp_fd);
+	execve(argv[0], argv, env);
+	return(putstr("error: cannot execute ", argv[0]));
 }
 
-void	execute_command(char **cmd, char **env)
+int main(int argc, char **argv, char **env)
 {
-	int i, j, last, readFrom, writeTo;
-	int dup_in, dup_out, pid;
+	int i = 0;
+	int pid = 0;
 	int fd[2];
+	int tmp_fd;
+	(void)argc;
 
-	j = 0;
-	while (cmd[j] && strcmp(cmd[j], "|"))
-		++j;
-	if (!cmd[j] && !strcmp(cmd[0], "cd"))
+	tmp_fd = dup(STDIN_FILENO);
+	while (argv[i] && argv[i + 1])
 	{
-		cd(cmd);
-		return ;
+		argv = &argv[i + 1];
+		i = 0;
+		while (argv[i] && strcmp(argv[i], ";") && strcmp(argv[i], "|"))
+			i++;
+		if (strcmp(argv[0], "cd") == 0)
+		{
+			if(i != 2)
+				putstr("error: cd bad arguments", NULL);
+			else if (chdir(argv[1]) != 0)
+				putstr("error: cd: cannot change directory to ", argv[1]);
+		}
+		else if(i != 0 && (argv[i] == NULL || strcmp(argv[i], ";") == 0))
+		{
+			pid = fork();
+			if (pid == 0)
+			{
+				if (execute_cmd(argv, i, tmp_fd, env))
+					return (1);
+			}
+			else
+			{
+				close(tmp_fd);
+				while (waitpid(-1, NULL, WUNTRACED) != -1);
+				tmp_fd = dup(STDIN_FILENO);
+			}
+		}
+		else if (i != 0 && strcmp(argv[i], "|") == 0)
+		{
+			pipe(fd);
+			pid = fork();
+			if (pid == 0)
+			{
+				dup2(fd[1], STDOUT_FILENO);
+				close(fd[0]);
+				close(fd[1]);
+				if (execute_cmd(argv, i, tmp_fd, env))
+					return(1);
+			}
+			else
+			{
+				close(fd[1]);
+				close(tmp_fd);
+				tmp_fd = fd[0];
+			}
+		}
 	}
-	if ((readFrom = dup(STDIN_FILENO)) == -1)
-		fatal_error();
-	if ((dup_in = dup(STDIN_FILENO)) == -1)
-		fatal_error();
-	if ((dup_out = dup(STDIN_FILENO)) == -1)
-		fatal_error();
-
-	last = 0;
-	i = 0;
-	j = 0;
-	while (!last)
-	{
-		while (cmd[j] && strcmp(cmd[j], "|"))
-			++j;
-		if (!cmd[j])
-			last = 1;
-		cmd[j] = NULL;
-
-		if (pipe(fd) == -1)
-			fatal_error();
-
-		if (last)
-			writeTo = dup_out;
-		else
-			writeTo = fd[1];
-
-		if (dup2(readFrom, STDIN_FILENO) == -1)
-			fatal_error();
-		close(readFrom);
-		if (dup2(writeTo, STDIN_FILENO) == -1)
-			fatal_error();
-		close(writeTo);
-
-		if ((pid = fork()) == -1)
-			fatal_error();
-		if (pid == 0)
-			child_execute_command(cmd + i, env);
-		else
-			readFrom = fd[0];
-		i = ++j;
-	}
-
-	while (wait(NULL) != -1);
-
-	if (dup2(dup_in, STDIN_FILENO) == -1)
-		fatal_error();
-	close(dup_in);
-	close(fd[1]);
-	close(readFrom);
-}
-
-
-int main (int argc, char **argv, char **env)
-{
-	int i;
-	int j;
-
-	i = 1;
-	j = 1;
-	while (i < argc)
-	{
-		while (argv[j] && strcmp(argv[j], ";"))
-			j++;
-		argv[j] = NULL;
-		if (argv[i])
-			execute_command(argv + i, env);
-		i = ++j;
-	}
+	close(tmp_fd);
 	return (0);
 }
